@@ -1,4 +1,17 @@
 function [t, r, v, stats] = Encke(a_disturb, tspan, rt0, vt0, muC, options) 
+    % Please report bugs and inquiries to:
+    %
+    % Name       : Rody P.S. Oldenhuis
+    % E-mail     : oldenhuis@gmail.com    (personal)
+    %              oldenhuis@luxspace.lu  (professional)
+    % Affiliation: LuxSpace s�rl
+    % Licence    : BSD
+    
+    
+    % If you find this work useful, please consider a donation:
+    % https://www.paypal.me/RodyO/3.5
+
+
 % Following Battin, pages 448-449
 
     %% Initialize
@@ -44,9 +57,9 @@ function [t, r, v, stats] = Encke(a_disturb, tspan, rt0, vt0, muC, options)
         'have been set.']);    
 
     if ~isfield(options, 'handle')
-        % Defaults to "best" integrator in standard MATLAB
+        % Defaults to  best integrator in standard MATLAB
         ode_options = options;
-        solver      = @ode45;
+        solver      = @ode113;
         solverType  = 0;
     else
         % Custom handle
@@ -196,7 +209,7 @@ function varargout = de1(t,y, a_disturb,t0,rt0,vt0,muC)
     persistent a_main a_perturb rosc vosc
     if nargin==0
         % Condition to trigger rectification
-        varargout{1} = norm(a_main) > 5*norm(a_perturb);
+        varargout{1} = norm(a_main) > 0.9*norm(a_perturb);
         % Osculating orbit data
         varargout{2} = rosc;
         varargout{3} = vosc;        
@@ -243,7 +256,7 @@ function varargout = de2(t,delta, a_disturb,t0,rt0,vt0,muC)
     persistent a_main a_perturb rosc vosc
     if nargin==0
        % Condition to trigger rectification
-        varargout{1} = norm(a_main) > 5*norm(a_perturb);
+        varargout{1} = norm(a_main) > 0.9*norm(a_perturb);
         % Osculating orbit data
         varargout{2} = rosc;
         varargout{3} = vosc;  
@@ -329,12 +342,13 @@ function [rosc, vosc] = osculating_orbit(rt,vt, dt, muC)
         if q < 1 % convergence
             A =  1;   B = 1;   G = 1;   n = 0;      
             k = -9;   d = 15;  l = 3;   Gprev = inf;
-            while abs(G-Gprev) > 1e2*max(eps([G Gprev]))
+            while abs(G-Gprev) > 1e4*max(eps([G Gprev]))
                 k = -k;                 l = l + 2;
-                d = d + 4*l;            n = n + (1+k)*l;
+                d = d + 4*l;            n = n + (1+k)*l;                
                 A = d/(d - n*A*q);      B = (A-1)*B;
-                Gprev = G;              G = G + B;
+                Gprev = G;              G = G + B;                
             end % continued fraction evaluation
+            
         else
             error(...
                 'lagrange_coefs:continued_fraction_diverges',...
@@ -352,13 +366,11 @@ function [rosc, vosc] = osculating_orbit(rt,vt, dt, muC)
         r      = r1m*U0 + nu0*U1 + muC*U2;
         t      = r1m*U1 + nu0*U2 + muC*U3;
         deltaT = t - dt;
+        uPrev  = u;
         
         % Newton-Raphson method works most of the time, but is
-        % not too stable; the method fails far too often for my
-        % liking...
-        % u = u - deltaT/4/(1-q)/r;
-        % Halley's method is much better in that respect:
-        uPrev = u;
+        % not too stable; Halley's method is much better:        
+        % u = u - deltaT/4/(1-q)/r;        
         u = u - deltaT/((1-q)*(4*r + deltaT*beta*u));
         
         % But that too might fail. If that is the case, try to rescue 
