@@ -1,1 +1,12 @@
+Documentation 
+
+WHY is it so horribly bad? 
+ode113/Cowell has an order of magnitude fewer evals than ode113/Encke...
+Continuous/chained does not seem to matter much...
+
+
+RKN1210 in continuous produces incorrect ouptut
+
 dense vs. sparse output
+
+
