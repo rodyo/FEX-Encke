@@ -1,4 +1,4 @@
-function [t, r, v, stats] = Encke(solver, perturbation, solver_order, tspan, rt0, vt0, muC, options)
+function [t, r, v, stats] = Encke(solver, perturbation, solver_order, method, tspan, rt0, vt0, muC, options)
 
     % Please report bugs and inquiries to:
     %
@@ -15,10 +15,10 @@ function [t, r, v, stats] = Encke(solver, perturbation, solver_order, tspan, rt0
 
 % Following Battin, pages 448-449
 
-    %% Initialize
+    %% Check input arguments
 
     % Check I/O argument
-    error(nargchk   (7, 8, nargin,  'struct'));
+    error(nargchk   (8, 9, nargin,  'struct'));
     error(nargoutchk(0, 4, nargout, 'struct'));
 
     assert(isa(solver, 'function_handle'), ...
@@ -32,6 +32,11 @@ function [t, r, v, stats] = Encke(solver, perturbation, solver_order, tspan, rt0
     assert(isnumeric(solver_order) && isscalar(solver_order) && any(solver_order == [1 2]),...
            [mfilename ':unsupported_solver_order'],...
            'Solver order must be equal to 1 or 2.');
+
+    assert(isempty(method) || (ischar(method) && any(strcmpi(method, {'chained' 'continuous'}))),...
+           [mfilename ':invalid_method'], [...
+           'Argument ''method'' must be a string equal to either ''chained'' ',...
+           'or ''continuous''.']);
 
     assert(isnumeric(tspan) && isvector(tspan) && numel(tspan) >= 2 && ...
            all(isfinite(tspan)) && all(isreal(tspan)) && ...
@@ -48,10 +53,6 @@ function [t, r, v, stats] = Encke(solver, perturbation, solver_order, tspan, rt0
            [mfilename ':ioarg_error'],...
            ['The standard gravitational parameter of the central body (''muC'') must be givan ',...
            'as a real positive scalar.']);
-
-    % Initialize constants
-    stats.rectifications = 0;
-    stats.function_evaluations = 1; % NOTE: one eval is done to check the user-provided function
 
     % Initialize options
     if nargin < 6 || isempty(options)
@@ -82,354 +83,563 @@ function [t, r, v, stats] = Encke(solver, perturbation, solver_order, tspan, rt0
     end
 
 
+    %% Initialize Encke
+    
+    scale_warning_issued = false;
+    
+    % Set/get defaults    
+    if isempty(method)
+        method = 'chained'; end
+    
+    % Deal with existing output functions
+    existing_outputFcn = odeget(options, 'OutputFcn', @(varargin)false);
+    
+    % Initialize Encke's outputs
+    stats.method               = method;
+    stats.solver               = func2str(solver);
+    stats.solver_order         = solver_order;
+    stats.delta                = [];
+    stats.delta_dot            = [];
+    stats.faux_delta           = [];
+    stats.faux_delta_dot       = [];
+    stats.rectifications       = 0;
+    stats.function_evaluations = 1; % NOTE: one eval is done to check 
+                                    % the user-provided function    
 
-
-
-
+    % Initially, the osculating orbit equals the initial values
     tosc = tspan(1);
     rosc = rt0;
     vosc = vt0;
 
-    t_out = tosc;
-    r_out = rosc;
-    v_out = vosc;
-    
-    
-    prev_delta = zeros(3,1);
-    prev_deltadot = zeros(3,1);
-    
+    %% Run solver
 
+    % Solve using the selected solver method
+    switch lower(method)
+        case 'chained' 
+            chained_method();
 
-    % Set/get defaults. Make sure the rectification check is carried
-    % out at each integration step
-    % NOTE: An output function is used to detect an event. Although an
-    % EvenFcn would seem better suited, in this case, we're not
-    % interested in *exactly* where the rectification should take place
-    % (standard behavior in almost all ODE solvers), but rather, whether
-    % it makes sense to do it in the next step. Therefore, to save on
-    % function evaluations, the terminal property of the OutputFunction is
-    % used, which makes sure the condition is only checked *once* per
-    % iteration.
-    solver_options = odeset(options, ...                            
-                            'AbsTol'   , odeget(options, 'AbsTol', 1e-8),...
-                            'RelTol'   , odeget(options, 'RelTol', 1e-8),...
-                            'OutputFcn', @(varargin) check_rectify(varargin{:}) || ...
-                                                     feval(odeget(options, 'OutputFcn', @(varargin)false), varargin{:})...
-    );
-
-
-
-
-
-
-    % The 2 solver types have 2 different calls
-    if solver_order == 1
-        D = solver(@de1, ...
-                   tspan, ...
-                   zeros(6,1),...
-                   solver_options);
-    else
-        D = solver(@de2, ...
-                   tspan, ...
-                   zeros(3,1),...
-                   zeros(3,1),...
-                   solver_options);
+        case 'continuous'
+            continuous_method();            
     end
 
-    stats.function_evaluations = D.stats.nfevals;
-    
+    %% Finalize
+
+    % Rename and transpose outputs for consistency with
+    % outputs from ODE suite
     t = t_out;
     r = r_out.';
     v = v_out.';
 
 
-
-
-    function terminate = check_rectify(t, y, flag)
+    %% Nested functions
+    
+    % Nesting and double-nesting may seem ugly, but in this case it
+    % prevents such monstrously awkward and clumbsy constructions 
+    % that I'd say it's a vindicative use case of nesting functions, 
+    % MATLAB style
+    
+    % The "chained" method
+    function chained_method()
         
-        % Output function halts integration
-        terminate = false;
+        % When integrating differences (instead of position/velocity directly),
+        % the absolute tolerance should remain unchanged. The relative
+        % tolerance should however be adjusted, because the basis against which 
+        % the relative tolerance is measured is of course much smaller
 
-        % empty flag == after successful step
-        if isempty(flag)
+        % Set default AbsTol
+        % RelTol: rescale to 10% of initial position -- this agrees with the 
+        % criterion for rectification
+        solver_options = odeset(options, ...
+                                'AbsTol',      odeget(options, 'AbsTol', 1e-8),...
+                                'RelTol', 10 * odeget(options, 'RelTol', 1e-6) ...
+        );
+    
+        % Initilaize output variables
+        t_out = [];
+        r_out = [];
+        v_out = [];
+        
+        stats.faux_delta     = NaN;
+        stats.faux_delta_dot = NaN;
+        
+        % These must be visible to the inner functions ("locally global)"    
+        rosc_slice = [];
+        vosc_slice = [];
 
-            % Rename input for clarity
-            t_new        = t(end);
-            delta_new    = y(1:3,end);
-            deltadot_new = y(4:6,end);
+        % Rectification is carried out via OutputFcn.
+        %
+        % NOTE: An output function is used to detect an event. Although an
+        % EvenFcn would seem better suited, in this case, we're not
+        % interested in *exactly* where the rectification should take place
+        % (standard behavior in almost all ODE solvers), but rather, whether
+        % it makes sense to do it in the next step. Therefore, to save on
+        % function evaluations, the terminal property of the OutputFunction is
+        % used, which makes sure the condition is only checked *once* per
+        % iteration.
+        solver_options = odeset(solver_options, ...
+                                'OutputFcn', @(varargin) check_rectify(varargin{:}) || ...
+                                                         existing_outputFcn_chained_wrapper(varargin{:}) ...
+                                );
+
+        % Main loop:
+        % - Let solver integrate until rectification is needed
+        % - Break off integration and collect data
+        % - Apply recitifcation
+        % - Repeat from the start, until the final time is reached.
+        done = false;
+        while ~done
+
+            % The 2 solver types have 2 different calls
+            if solver_order == 1
+                D = solver(@de1, ...
+                           tspan, ...
+                           zeros(6,1),...
+                           solver_options);
+
+                delta    = D.y(1:3,:).';
+                deltadot = D.y(4:6,:).';
+
+            else
+                D = solver(@de2, ...
+                           tspan, ...
+                           zeros(3,1),...
+                           zeros(3,1),...
+                           solver_options);
+
+                delta    = D.y;
+                deltadot = D.yp;
+
+            end
             
-            delta_real    = delta_new    - prev_delta;
-            deltadot_real = deltadot_new - prev_deltadot;
+            % Append solver outputs to stats output
+            tslice = D.x(:);
+            stats.function_evaluations = stats.function_evaluations + ...
+                                         D.stats.nfevals;
+                                     
+            stats.delta     = [stats.delta;        delta(1:end-~done,:)];
+            stats.delta_dot = [stats.delta_dot; deltadot(1:end-~done,:)];
 
-            % Progress osculating orbit
-            [rosc, vosc] = advance_osculating_orbit(rosc,...
-                                                    vosc,...
-                                                    t_new - tosc,...
-                                                    muC);
+            % Save values for next iteration
+            hinitial = tslice(end-1) - tslice(end-2);
+            tspan    = [tslice(end) tspan(end)];
+            done     = tslice(end)==tspan(end);
 
-            % (rectification)
-            tosc = t_new;
-            rosc = rosc + delta_real;
-            vosc = vosc + deltadot_real;
+            % We can in all likelihood keep using the step size from the
+            % previous integration
+            solver_options = odeset(solver_options,...
+                                    'InitialStep', hinitial);
 
-            % Assign new solution to function output
-            t_out = [t_out;  t_new];
-            r_out = [r_out   rosc ];
-            v_out = [v_out   vosc ];
+            % Insert data into output arrays
+            t_out = [t_out;  tslice(1:end-~done)];                                         %#ok<AGROW>
+            r_out = [r_out   [rt0 rosc_slice(:,1:end-~done)] +    delta(1:end-~done,:).']; %#ok<AGROW>
+            v_out = [v_out   [vt0 vosc_slice(:,1:end-~done)] + deltadot(1:end-~done,:).']; %#ok<AGROW>
 
-            % Keep track of solver's solutions
-            prev_delta    = delta_new;
-            prev_deltadot = deltadot_new;
+            % Apply rectification
+            rt0 = rosc;
+            vt0 = vosc;
+
+        end
+        
+        
+        %{
+        Wrapper for any existing output function. For the chained method, 
+        if the existing output function asks the solver to terminate, also
+        the outer loop should be broken
+        %}
+        function terminate = existing_outputFcn_chained_wrapper(varargin)        
+            terminate = feval(existing_outputFcn, varargin{:});
+            if (terminate)
+                done = true; end        
+        end
+
+        % Little wrapper function; checks if rectification is needed
+        function terminate = check_rectify(t, y, varargin)
+                       
+            terminate = false;
+                        
+            % solver order == 1: (t,y,flag)
+            % solver order == 1: (t,y,dy,flag)
+            flag = varargin{2 - (solver_order == 1)};
+            
+            if strcmp(flag, 'init')
+                rosc_slice = [];
+                vosc_slice = [];
+
+            elseif isempty(flag)
+                
+                t_new = t(end);
+                if solver_order == 1
+                    % (t,y,flag)                    
+                    delta_new    = y(1:3,end);
+                    deltadot_new = y(4:6,end);
+                else
+                    % (t,y,dy,flag)                    
+                    delta_new    = y;
+                    deltadot_new = varargin{1};
+                end
+
+                [rosc_t, vosc_t] = advance_orbit(rosc,...
+                                                 vosc,...
+                                                 t_new - tosc,...
+                                                 muC);
+
+                rosc_slice = [rosc_slice  rosc_t];
+                vosc_slice = [vosc_slice  vosc_t];
+
+                if norm(delta_new) > 0.1*norm(rosc_t)
+
+                    terminate = true;                                
+
+                    % Do rectification
+                    rosc = rosc_t + delta_new;
+                    vosc = vosc_t + deltadot_new;
+                    tosc = t_new;
+
+                    stats.rectifications = stats.rectifications + 1;
+
+                end
+            end
+        end
+
+
+        %{
+        Compute first derivative of
+         
+              y(t) = [delta(t)      % == r(t) - rosc(t)
+                      delta_dot(t)] % == v(t) - vosc(t)              
+        
+        This DE should be used if the disturbing acceleration depends on the
+        velocity, or if the solver is designed to solve systems of the type
+        
+                dy/dt = f(t,y)
+        
+        s.t.  
+                y(t0) = y0
+        
+        %}
+        function dydt = de1(t,y)
+            
+            delta     = y(1:3);
+            delta_dot = y(4:6);
+
+            [rosc_t, vosc_t] = advance_orbit(rosc,...
+                                             vosc,...
+                                             t - tosc,...
+                                             muC);
+
+            r_t  = delta     + rosc_t;
+            v_t  = delta_dot + vosc_t;
+            rt2  = r_t.'*r_t;
+            q_t  = delta.' * (delta - 2*r_t) / rt2;
+            fq   = 1 - (1 + q_t)^(3/2);
+
+            a_main    = muC/norm(rosc_t)^3 * (fq*r_t - delta);
+            a_perturb = perturbation(t, r_t, v_t);
+            a_total   = a_main + a_perturb;
+
+            % Generate output
+            dydt = [delta_dot  % d (delta)/dt
+                    a_total    % d²(delta)/dt²
+            ];
+        
+            % Check whether Encke's method still makes sense
+            if ~scale_warning_issued && 0.1*muC/rt2 < norm(a_perturb)
+                scale_warning_issued = true;
+                warning([mfilename ':scale_issues'], [...
+                    'Perturbative acceleration is over 10%% of the main acceleration; ',...
+                    'Encke''s method may be inefficient for this problem.']);
+
+            end
 
         end
 
-    end
 
-
-    % Compute first derivative of
-    %
-    %    y(t) = [
-    %       delta(t)     = r(t) - rosc(t)
-    %       delta_dot(t) = v(t) - vosc(t)
-    %    ]
-    %
-    % This DE should be used if the disturbing acceleration depends on the
-    % velocity, or if the solver is designed to solve systems of the type
-    %
-    %       dy/dt = f(t,y)
-    % s.t.  y(t0) = y0
-    %
-    function dydt = de1(t, y)
-
-        delta     = y(1:3);
-        delta_dot = y(4:6);
+        %{
+        Compute second derivative of
         
-        delta_real     = delta     - prev_delta;
-        delta_dot_real = delta_dot - prev_deltadot;
-
-        [rosc_t, vosc_t] = advance_osculating_orbit(rosc, vosc, t - tosc, muC);
-
-        r_t  = delta_real     + rosc_t;
-        v_t  = delta_dot_real + vosc_t;
-
-        q_t  = delta_real.' * (delta_real - 2*r_t) / (r_t.' * r_t);
-        fq   = 1 - (1 + q_t)^(3/2);
-
-        a_main    = muC/norm(rosc_t)^3 * (fq*r_t - delta_real);
-        a_perturb = perturbation(t, r_t, v_t);
-        a_total   = a_main + a_perturb;
-
-        % Generate output
-        dydt = [delta_dot_real  % d (delta)/dt
-                a_total];  % d²(delta)/dt²
+              delta(t) = r(t) - rosc(t)
+           
+        This DE should be used if the disturbing acceleration is independent of
+        the velocity. If this is the case, the solver must ba designed to solve
+        systems of type
+        
+              d²y/dt² = f(t,y)
+        
+        s.t.
+              y(t0) = y0
+              dy/dt = v0
+        %}
+        function d2deltadt2 = de2(t, delta)
             
+            rosc_t = advance_orbit(rosc,...
+                                   vosc,...
+                                   t - tosc,...
+                                   muC);
+
+            r_t = delta + rosc_t;
+            rt2  = r_t.'*r_t;
+            q_t = delta.' * (delta - 2*r_t) / rt2;
+            fq  = 1 - (1 + q_t)^(3/2);
+
+            % Generate output
+            a_main     = muC/norm(rosc_t)^3 * (fq*r_t - delta);
+            a_perturb  = perturbation(t, r_t);
+            d2deltadt2 = a_main + a_perturb;
+            
+            % Check whether Encke's method still makes sense
+            if ~scale_warning_issued && 0.1*muC/rt2 < norm(a_perturb)
+                scale_warning_issued = true;
+                warning([mfilename ':scale_issues'], [...
+                    'Perturbative acceleration is over 10%% of the main acceleration; ',...
+                    'Encke''s method may be inefficient for this problem.']);
+
+            end
+
+        end
+        
     end
+    
+    
+    % The "continuous" method
+    function continuous_method()
+                
+        % When integrating differences (instead of position/velocity directly),
+        % the absolute tolerance should remain unchanged. The relative
+        % tolerance cannot be used in this case, because the solver will
+        % solve for faux-differences, meaning, the norm to use for the
+        % RelTol computation should progressively increase. Since there is no 
+        % mechanism to set the relative tolerance dynamically, the only
+        % thing that can be done is set a more stringent AbsTol, and not
+        % use the RelTol at all:
+        solver_options = odeset(options, ...
+                                'AbsTol', 0.1 * odeget(options, 'AbsTol', 1e-8),...
+                                'RelTol', [] ...
+        );
+        
+        prev_delta    = zeros(size(rt0));
+        prev_deltadot = zeros(size(vt0));
 
+        % Initilaize output variables
+        t_out = tosc;
+        r_out = rosc;
+        v_out = vosc;
 
+        % Set/get defaults. Make sure the rectification check is carried
+        % out at each integration step, which is most eaily done via an
+        % output function.            
+        solver_options = odeset(solver_options, ...
+                                'OutputFcn', @(varargin) continuous_rectification(varargin{:}) || ...
+                                                         feval(existing_outputFcn, varargin{:})...
+        );
 
-
-
-
-end
-
-
-
-
-%{
-
-
-    % Main loop:
-    % - Let solver integrate until rectification is needed
-    % - Break off integration and collect data
-    % - Apply recitifcation
-    % - Repeat from the start, until the final time is reached.
-    while ~done
-
-        t0 = tspan(1);
-
-        % The 2 sovler types have 2 different calls
+        % The 2 solver types have 2 different calls
         if solver_order == 1
-            D = solver(@(t,y) de1(t,y, perturbation,t0,rt0,vt0,muC), ...
+            D = solver(@de1_continuous, ...
                        tspan, ...
                        zeros(6,1),...
                        solver_options);
-
-            delta    = D.y(1:3,:).';
-            deltadot = D.y(4:6,:).';
-
+                   
+            faux_delta     = D.y(1:3,:).';
+            faux_delta_dot = D.y(4:6,:).';
+            
         else
-            D = solver(@(t,y) de2(t,y, perturbation,t0,rt0,vt0,muC), ...
+            D = solver(@de2_continuous, ...
                        tspan, ...
                        zeros(3,1),...
                        zeros(3,1),...
                        solver_options);
+                   
+            faux_delta     = D.y;
+            faux_delta_dot = D.yp;
+        end
+        
+        % Collect function evaluations
+        stats.function_evaluations = D.stats.nfevals;
+        
+        % "faux" deltas
+        stats.faux_delta     = faux_delta;
+        stats.faux_delta_dot = faux_delta_dot;
+        
+        
+        % Perform rectification at every successful step
+        function terminate = continuous_rectification(t, y, varargin)
+            
+            % solver order == 1: (t,y,flag)
+            % solver order == 1: (t,y,dy,flag)
+            flag = varargin{2 - (solver_order == 1)};
+            
+            % Output function halts integration
+            terminate = false;
 
-            delta    = D.y;
-            deltadot = D.yp;
+            % empty flag == after successful step
+            if isempty(flag)
+                
+                t_new = t(end);
+                if solver_order == 1
+                    % (t,y,flag)
+                    delta_new    = y(1:3,end);
+                    deltadot_new = y(4:6,end);
+                else
+                    % (t,y,dy,flag)
+                    delta_new    = y;
+                    deltadot_new = varargin{1};
+                end
+
+                delta_real    = delta_new    - prev_delta;
+                deltadot_real = deltadot_new - prev_deltadot;
+
+                % Progress osculating orbit
+                [rosc, vosc] = advance_orbit(rosc,...
+                                             vosc,...
+                                             t_new - tosc,...
+                                             muC);
+                % (rectification)
+                tosc = t_new;
+                rosc = rosc + delta_real;
+                vosc = vosc + deltadot_real;
+
+                stats.rectifications = stats.rectifications + 1;
+
+                % Assign new solution to function output
+                t_out = [t_out;  t_new];
+                r_out = [r_out   rosc ];
+                v_out = [v_out   vosc ];
+                
+                stats.delta     = [stats.delta;     delta_real.'   ];
+                stats.delta_dot = [stats.delta_dot; deltadot_real.'];
+
+                % Keep track of solver's solutions
+                prev_delta    = delta_new;
+                prev_deltadot = deltadot_new;
+
+            end
 
         end
 
-        tslice = D.x(:);
-        stats.function_evaluations = stats.function_evaluations + D.stats.nfevals;
+        %{
+        Compute first derivative of
+        
+             y(t) = [delta(t)      % == r(t) - rosc(t)
+                     delta_dot(t)] % == v(t) - vosc(t)             
+        
+        Taking into account that the solver outputs a faux delta (accumulated
+        over time).
+        
+        This DE should be used if the disturbing acceleration depends on the
+        velocity, or if the solver is designed to solve systems of the type
+                
+                dy/dt = f(t,y)
+        
+        s.t.  
+        
+                y(t0) = y0        
+        %}
+        function dydt = de1_continuous(t, y)
+            
+            delta     = y(1:3);
+            delta_dot = y(4:6);
 
-        % Save values for next iteration
-        hinitial = tslice(end-1) - tslice(end-2);
-        tspan    = [tslice(end) tspan(end)];
-        done     = tslice(end)==tspan(end);
+            delta_real     = delta     - prev_delta;
+            delta_dot_real = delta_dot - prev_deltadot;
 
-        % We can in all likelihood keep using the step size from the
-        % previous integration
-        solver_options = odeset(solver_options,...
-                                'InitialStep', hinitial);
+            [rosc_t, vosc_t] = advance_orbit(rosc,...
+                                             vosc,...
+                                             t - tosc,...
+                                             muC);
 
-        % Insert data into output arrays
-        [rosc, vosc] = check_rectify();
-        t = [t;  tslice(1:end-~done)];                                   %#ok<AGROW>
-        r = [r   [rt0 rosc(:,1:end-~done)] + delta(1:end-~done,:).'   ]; %#ok<AGROW>
-        v = [v   [vt0 vosc(:,1:end-~done)] + deltadot(1:end-~done,:).']; %#ok<AGROW>
+            r_t  = delta_real     + rosc_t;
+            v_t  = delta_dot_real + vosc_t;
+            rt2  = r_t.' * r_t;
+            q_t  = delta_real.' * (delta_real - 2*r_t) / rt2;
+            fq   = 1 - (1 + q_t)^(3/2);
 
-        % Apply rectification
-        rt0 = rosc(:,end) + delta(end,:).';
-        vt0 = vosc(:,end) + deltadot(end,:).';
-        stats.rectifications = stats.rectifications + ~done;
+            a_main    = muC/norm(rosc_t)^3 * (fq*r_t - delta_real);
+            a_perturb = perturbation(t, r_t, v_t);
+            a_total   = a_main + a_perturb;
 
-    end
+            % Generate output
+            dydt = [delta_dot_real  % d (delta)/dt
+                    a_total];       % d²(delta)/dt²
+                                
+            % Check whether Encke's method still makes sense
+            if ~scale_warning_issued && 0.1*muC/rt2 < norm(a_perturb)
+                scale_warning_issued = true;
+                warning([mfilename ':scale_issues'], [...
+                    'Perturbative acceleration is over 10%% of the main acceleration; ',...
+                    'Encke''s method may be inefficient for this problem.']);
 
-    % Transpose to have dims of t, r and v all agree
-    r = r.';
-    v = v.';
-
-end
-
-
-% Little wrapper function; checks if rectification is needed
-function varargout = check_rectify(solver_order, varargin)
-
-    persistent rosc vosc
-    if nargin == 0
-        varargout{1} = rosc;
-        varargout{2} = vosc;
-        return;
-    end
-
-    terminate = false;
-    flag = varargin{end};
-    if isempty(flag)
-        if solver_order == 1
-            [terminate, rosc(:,end+1), vosc(:,end+1)] = de1();
-        else
-            [terminate, rosc(:,end+1), vosc(:,end+1)] = de2();
+            end
+            
         end
 
-    elseif strcmp(flag, 'init')
-        rosc = [];
-        vosc = [];
+        %{
+        Compute second derivative of
+        
+             delta(t) = r(t) - rosc(t)
+         
+        Taking into account that the solver outputs a faux delta (accumulated
+        over time).
+        
+        This DE should be used if the disturbing acceleration is independent of
+        the velocity. If this is the case, the solver must ba designed to solve
+        systems of type
+        
+             d²y/dt² = f(t,y)
+        
+        s.t.
+                y(t0) = y0
+                dy/dt = v0
+        %}
+        function d2ydt2 = de2_continuous(t, delta)
+            
+            delta_real = delta - prev_delta;
+            
+            rosc_t = advance_orbit(rosc,...
+                                   vosc,...
+                                   t - tosc,...
+                                   muC);
+
+            r_t = delta_real + rosc_t;
+            rt2 = r_t.' * r_t;
+            q_t = delta_real.' * (delta_real - 2*r_t) / rt2;
+            fq  = 1 - (1 + q_t)^(3/2);
+
+            a_main    = muC/norm(rosc_t)^3 * (fq*r_t - delta_real);
+            a_perturb = perturbation(t, r_t);
+            a_total   = a_main + a_perturb;
+
+            % Generate output
+            d2ydt2 = a_total; % d²(delta)/dt²
+            
+            % Check whether Encke's method still makes sense
+            if ~scale_warning_issued && 0.1*muC/rt2 < norm(a_perturb)
+                scale_warning_issued = true;
+                warning([mfilename ':scale_issues'], [...
+                    'Perturbative acceleration is over 10%% of the main acceleration; ',...
+                    'Encke''s method may be inefficient for this problem.']);
+
+            end
+
+        end
+
     end
-
-    varargout{1} = terminate;
-
+    
 end
 
-
-% Compute first derivative of
-%
-%    y(t) = [
-%       delta(t)     = r(t) - rosc(t)
-%       delta_dot(t) = v(t) - vosc(t)
-%    ]
-%
-% This DE should be used if the disturbing acceleration depends on the
-% velocity, or if the solver is designed to solve systems of the type
-%
-%       dy/dt = f(t,y)
-% s.t.  y(t0) = y0
-%
-function varargout = de1(t,y, perturbation, t0, rt0,vt0, muC)
-
-    persistent a_main a_perturb rosc vosc
-    if nargin==0
-        % Condition to trigger rectification
-        varargout{1} = norm(a_main) > 0.9*norm(a_perturb);
-        % Osculating orbit data
-        varargout{2} = rosc;
-        varargout{3} = vosc;
-        return;
-    end
-
-    delta     = y(1:3);
-    delta_dot = y(4:6);
-
-    [rosc, vosc] = advance_osculating_orbit(rt0,vt0, t-t0, muC);
-    r  = delta + rosc;
-    v  = delta_dot + vosc;
-    q  = delta'*(delta-2*r) / (r'*r);
-    fq = 1-(1+q)^(3/2);
-
-    a_main    = muC/norm(rosc)^3 * (fq*r - delta);
-    a_perturb = perturbation(t,r,v);
-    a_total   = a_main + a_perturb;
-
-    % Generate output
-    varargout{1} = [
-        delta_dot  % d (delta)/dt
-        a_total    % d²(delta)/dt²
-    ];
-
-end
-
-
-% Compute second derivative of
-%
-%    delta(t) = r(t) - rosc(t)
-%
-% This DE should be used if the disturbing acceleration is independent of
-% the velocity. If this is the case, the solver must ba designed to solve
-% systems of type
-%
-%     d²y/dt² = f(t,y)
-% s.t.  y(t0) = y0
-%       dy/dt = v0
-%
-function varargout = de2(t, delta, perturbation, t0, rt0,vt0, muC)
-
-    % Condition to trigger rectification
-    persistent a_main a_perturb rosc vosc
-    if nargin==0
-       % Condition to trigger rectification
-        varargout{1} = norm(a_main) > 0.9*norm(a_perturb);
-        % Osculating orbit data
-        varargout{2} = rosc;
-        varargout{3} = vosc;
-        return;
-    end
-
-    [rosc,vosc] = advance_osculating_orbit(rt0,vt0, t-t0, muC);
-    r  = delta + rosc;
-    q  = delta'*(delta-2*r) / (r'*r);
-    fq = 1-(1+q)^(3/2);
-
-    % Generate output
-    a_main       = muC/norm(rosc)^3 * (fq*r - delta);
-    a_perturb    = perturbation(t,r);
-    varargout{1} = a_main + a_perturb;
-
-end
-
-%}
 
 % Compute position & velocity after a certain time step
 %
 % References:
 % [1] S.W. Shepperd, "Universal Keplerian State Transition Matrix".
 % Celestial Mechanics 35(1985) pp. 129--144, DOI: 0008-8714/85.15
-function [rosc, vosc] = advance_osculating_orbit(rt, vt, dt, muC)
+function [r_new, v_new] = advance_orbit(rt, vt, dt, muC)
 % %#eml
 % eml.extrinsic('warning', 'error');
 
     % Quick exit for trivial case
-    rosc = rt;
-    vosc = vt;
-    if (dt == 0)
+    r_new = rt;
+    v_new = vt;
+    if dt == 0
         return; end
 
     % Intitialize
@@ -467,14 +677,13 @@ function [rosc, vosc] = advance_osculating_orbit(rt, vt, dt, muC)
         % than 1/2 after a few iterations, but NOT always.
         if (iter > maxiters)
             if (q > 0.5)
-                error(...
-                    'lagrange_coefs:q_unstable',...
-                    'Could not find solution in %d iterations.', maxiters);
+                error([mfilename 'lagrange_coefs_q_unstable'],...
+                      'Could not find solution in %d iterations.', maxiters);
             else
-                warning(...
-                    'lagrange_coefs:time_accuracy_not_met',...
-                    ['Could not find Lagrange coefficients with time accuracy better ',...
-                    'than %e. Assuming convergence...'], 1e2*max(eps([t dt])));
+                warning([mfilename 'lagrange_coefs_time_accuracy_not_met'],...
+                        ['Could not find Lagrange coefficients with time accuracy better ',...
+                        'than %e. Assuming convergence...'], ...
+                        1e2*max(eps([t dt])));
                 break
             end
         end
@@ -491,9 +700,8 @@ function [rosc, vosc] = advance_osculating_orbit(rt, vt, dt, muC)
             end % continued fraction evaluation
 
         else
-            error(...
-                'lagrange_coefs:continued_fraction_diverges',...
-                'Continued fraction diverges for q = %e', q);
+            error([mfilename 'lagrange_coefs_continued_fraction_diverges'],...
+                  'Continued fraction diverges for q = %e', q);
         end
 
         % Kepler iteration
@@ -520,9 +728,8 @@ function [rosc, vosc] = advance_osculating_orbit(rt, vt, dt, muC)
             u = (uPrev - sign(deltaT)*ulim)/2;
             regulafalsi_count = regulafalsi_count + 1;
             if regulafalsi_count > maxiters/2
-                error(...
-                    'lagrange_coefs:u_unstable',...
-                    'Could not locate zero of deltaT(u).');
+                error([mfilename 'lagrange_coefs_u_unstable'],...
+                      'Could not locate zero of deltaT(u).');
             end
         end
 
@@ -534,8 +741,8 @@ function [rosc, vosc] = advance_osculating_orbit(rt, vt, dt, muC)
         g = r1m*U1 + nu0*U2;    G = 1 - muC/r*U2;
 
         % and the new orbital position and velocity
-        rosc = f*rt + g*vt;
-        vosc = F*rt + G*vt;
+        r_new = f*rt + g*vt;
+        v_new = F*rt + G*vt;
     end
 
 end

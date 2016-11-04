@@ -9,7 +9,7 @@ function Encke_Demo
     % Licence    : BSD
 
 
-    % If you find this work useful, please consider a donation:
+    % If you find this work useful, please consider a small donation:
     % https://www.paypal.me/RodyO/3.5
 
 
@@ -22,70 +22,81 @@ function Encke_Demo
     vt0    = [0 1.0*sqrt(muC/RE) 0]';
     tspan0 = [0 0.5*86400];
     tspan  = tspan0;
-
     
+    % Solver options
+    options = odeset('Abstol', 1e-12,...
+                     'reltol', 1e-13);
+
+
     %% Encke's method
-    
-    
-    options = odeset('Abstol', 1e-3,...
-                     'reltol', 1e-2);
-    
 
-    %{
+
+    method  = 'chained';
+ %method  = 'continuous';
+
+
+
+    % {
     solver    = @rkn1210;
     order     = 2;
     a_disturb = @a_disturb2;
     %}
 
-    % {
-    solver    = @ode45;
+    %{
+    solver    = @ode113;
     order     = 1;
     a_disturb = @a_disturb1;
     %}
 
     tic
-    [t, r, v, stats] = Encke(solver, a_disturb, order, tspan, rt0, vt0, muC, options) ;
+    [t, r, v, stats] = Encke(solver, a_disturb, order, method, tspan, rt0, vt0, muC, options) ;
 
     fprintf(1, ...
             '\nEncke''s method required %f seconds (%d function evaluations).\n',...
             toc, stats.function_evaluations);
-       
         
+stats
 
-        
-%plot(r(:,1),r(:,2))
-%return 
-           
 
-    %% Cowell's method
-    
-    options = odeset('Abstol', 1e-14,...
+
+
+
+        options = odeset('Abstol', 1e-12,...
                      'reltol', 1e-13);
 
+    %% Cowell's method
+
+
+%{
+                 
     % Compare accuracy
     % NOTE: we need to have values at equal times to compute this,
     % hence this clumbsiness
-    %{
+    % {
     [~,rC,vC] = rkn1210(@(t,y)cowell(t,y, muC), t, rt0,vt0);
+    %}
     function dy2dt2 = cowell(t,y, muC)
         dy2dt2 = -muC*y/norm(y)^3 + a_disturb2(t,y); end
-    %}
-
-    % {
-    [~,rvC] = ode113(@(t,y)cowell1(t,y, muC), t, [rt0; vt0], options);
-    function dydt = cowell1(t,y, muC)
+    
+    %{
+    [~,rvC] = ode113(@(tt,y)cowell1(tt,y, muC), t, [rt0; vt0], options);
+% }                     
+    function dydt = cowell1(tt,y, muC)
         drdt   = y(4:6);
         d2rdt2 = -muC * y(1:3) ./ norm(y(1:3)).^3 + ...
-                a_disturb1(t, y(1:3), y(4:6));
-        
+                a_disturb1(tt, y(1:3), y(4:6));
+
         dydt = [drdt
                 d2rdt2];
     end
+    % {
     rC = rvC(:,1:3);
     vC = rvC(:,4:6);
-    %}
-
-
+    % }
+    
+    
+%}
+    %{
     % Plot accuracy comparison
     r_ERR = sqrt(sum((rC-r).^2,2));
     v_ERR = sqrt(sum((vC-v).^2,2));
@@ -98,28 +109,31 @@ function Encke_Demo
     plot(t, v_ERR * 1e3)
     hold on, grid on, title('Velocity difference [m/s]')
 
-    
+%}
 
     % Compare CPU time and fevals
     % NOTE: to have a fair comparison of CPU time requirements, we
     % have to re-do the integration, this time with integrator settings
     % optimised for CPU time
-    %{
+    % {
     tic
     [~,rC,~,~,output] = rkn1210(@(t,y)cowell(t,y, muC), tspan0, rt0,vt0);
     fprintf(1,...
             '\nCowell''s method required %f seconds (%d function evaluations).\n', ...
             toc, output.fevals);
     %}
-    % {
+    %{
     tic
-    PP = ode113(@(t,y)cowell1(t,y, muC), tspan0, [rt0; vt0]);
+    PP = ode113(@(t,y)cowell1(t,y, muC), tspan0, [rt0; vt0], options);
     fprintf(1, ...
             '\nCowell''s method required %f seconds (%d function evaluations).\n', ...
             toc, PP.stats.nfevals);
     rC = PP.y(1:3,:)';
     %}
-
+    
+    
+numel(PP.x)
+    
     % Plot position results
     figure(1), clf
     plot( r(:,1),  r(:,2), 'b', ...
@@ -137,7 +151,7 @@ function a_perturb = a_disturb1(~,r,~)
     %return
 
     a_perturb = [-r(2); r(1); 0];
-    a_perturb = a_perturb/norm(a_perturb) * 1e-4*6378/norm(r(1:3));
+    a_perturb = a_perturb/norm(a_perturb) * 5e-5;%1e-5*6378/norm(r(1:3));
 
     % artifical delay to simulate CPU time requirements for more
     % elaborate force models (0.01s in 1/10 cases averages 1ms per feval)
