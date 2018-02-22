@@ -1,5 +1,6 @@
+% TODO: test if progress_orbit is faster with coordinate transformations or
+%       MEX function 
 % TODO: dense output?
-% TODO: scale_factor should be an option 
 % TODO: single output argument is an object, with a plotting method
 %       (and methods similar to DEVAL)
 
@@ -189,10 +190,10 @@ function [t,... % time
     % Check function inputs
     function check_input(argc, argo)
 
-        % Check I/O argument
-        error(nargchk   (6, inf, argc, 'struct'));
-        error(nargoutchk(0, 4,   argo, 'struct'));
-
+        % Check I/O argument counts
+        error(   nargchk(6,inf,argc,'struct')); %#ok<*NCHKN> (narginchk() without error does not work in this case; 
+        error(nargoutchk(0,4,  argo,'struct')); %#ok<*NCHKE>  we're not checking THIS function's I/O counts)
+        
         assert(isa(solver, 'ODESolver'), ...
               [mfilename ':ioarg_error'],...
               'Argument ''solver'' must be a valid ODESolver object.');

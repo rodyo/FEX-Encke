@@ -36,6 +36,7 @@ function Encke_Demo
 
    
     solver = ODESolver('rkn1210', options); 
+    solver = ODESolver('gbs', options); 
     %solver = ODESolver('ode113', options);   
     %solver = ODESolver('ode113', options);    
    

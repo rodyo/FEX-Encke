@@ -23,6 +23,7 @@ classdef ODESolver < handle
                     solver = varargin{1};
                     
                     supported_solvers = {'rkn1210'
+                                         'gbs'
                                          'ode45'
                                          'ode113'};
                     
@@ -32,9 +33,14 @@ classdef ODESolver < handle
                            '');
                        
                     switch lower(solver)
+                        
                         case 'rkn1210'
                             obj.order  = 2;
                             obj.funfcn = @rkn1210;
+                            
+                        case {'gbs' 'bulirschstoer' 'graggbulirschstoer' 'odex'}
+                            obj.order  = 1;
+                            obj.funfcn = @BulirschStoer;
                             
                         case 'ode45'
                             obj.order  = 1;
