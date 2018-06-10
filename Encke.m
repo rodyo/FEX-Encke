@@ -1,5 +1,5 @@
 % TODO: test if progress_orbit is faster with coordinate transformations or
-%       MEX function 
+%       MEX function
 % TODO: dense output?
 % TODO: single output argument is an object, with a plotting method
 %       (and methods similar to DEVAL)
@@ -9,33 +9,30 @@ function [t,... % time
           r,...
           v,...
           stats] = Encke(solver,...
-                         perturbation,...                         
+                         perturbation,...
                          tspan,...
                          rt0,...
                          vt0,...
                          muC,...
                          varargin)
-                     
+
     % Please report bugs and inquiries to:
     %
-    % Name       : Rody P.S. Oldenhuis
-    % E-mail     : oldenhuis@gmail.com    (personal)
-    %              oldenhuis@luxspace.lu  (professional)
-    % Affiliation: LuxSpace sarl
-    % Licence    : BSD
-
+    % Name    : Rody P.S. Oldenhuis
+    % E-mail  : oldenhuis@gmail.com
+    % Licence : 2-clause BSD (See License.txt)
 
     % If you find this work useful, please consider a donation:
     % https://www.paypal.me/RodyO/3.5
 
 
 % Following Battin, pages 448-449
-    
+
     %% Initialize Encke
-    
+
     check_input(nargin, nargout);
     encke_options = get_options(varargin{:});
-    
+
     if isempty(solver)
         % Defaults to best integrator in standard MATLAB
         solver = ODESolver();
@@ -60,14 +57,14 @@ function [t,... % time
     % Deal with existing output functions
     existing_outputFcn = odeget(solver.options, ...
                                 'OutputFcn', @(varargin)false );
-    
+
     % Initialize Encke's outputs
-    stats = struct('solver'              , solver,...                   
+    stats = struct('solver'              , solver,...
                    'delta'               , [],...
-                   'delta_dot'           , [],...  
+                   'delta_dot'           , [],...
                    'rectification_times' , [],...
-                   'function_evaluations', 1); % NOTE: one eval is done to check 
-                                               % the user-provided function    
+                   'function_evaluations', 1); % NOTE: one eval is done to check
+                                               % the user-provided function
 
     % Initially, the osculating orbit equals the initial values
     tosc = tspan(1);
@@ -78,11 +75,11 @@ function [t,... % time
 
     % When integrating differences (instead of position/velocity directly),
     % the absolute tolerance should remain unchanged. The relative
-    % tolerance should however be adjusted, because the basis against which 
+    % tolerance should however be adjusted, because the basis against which
     % the relative tolerance is measured is of course much smaller
 
     % Set default AbsTol
-    % RelTol: rescale to 10% of initial position -- this agrees with the 
+    % RelTol: rescale to 10% of initial position -- this agrees with the
     % criterion for rectification
     reltol_rescale = 1/(encke_options.scale_factor);
     solver.options = odeset(solver.options, ...
@@ -94,7 +91,7 @@ function [t,... % time
     r_out = [];
     v_out = [];
 
-    % These must be visible to the inner functions ("locally global)"    
+    % These must be visible to the inner functions ("locally global)"
     rosc_slice = [];
     vosc_slice = [];
 
@@ -133,7 +130,7 @@ function [t,... % time
                 delta    = D.y(1:3,:).';
                 deltadot = D.y(4:6,:).';
 
-            case 2 
+            case 2
                 D = solver.funfcn(@de2, ...
                                   tspan, ...
                                   zeros(3,1),...
@@ -142,7 +139,7 @@ function [t,... % time
 
                 delta    = D.y;
                 deltadot = D.yp;
-                                
+
         end
 
         % Append solver outputs to stats output
@@ -176,7 +173,7 @@ function [t,... % time
         vt0 = vosc;
 
     end
-    
+
     %% Finalize
 
     % Rename and transpose outputs for consistency with
@@ -186,14 +183,14 @@ function [t,... % time
     v = v_out.';
 
     %% Nssted functions
-    
+
     % Check function inputs
     function check_input(argc, argo)
 
         % Check I/O argument counts
-        error(   nargchk(6,inf,argc,'struct')); %#ok<*NCHKN> (narginchk() without error does not work in this case; 
+        error(   nargchk(6,inf,argc,'struct')); %#ok<*NCHKN> (narginchk() without error does not work in this case;
         error(nargoutchk(0,4,  argo,'struct')); %#ok<*NCHKE>  we're not checking THIS function's I/O counts)
-        
+
         assert(isa(solver, 'ODESolver'), ...
               [mfilename ':ioarg_error'],...
               'Argument ''solver'' must be a valid ODESolver object.');
@@ -223,56 +220,56 @@ function [t,... % time
                [mfilename ':ioarg_error'], [...
                'The standard gravitational parameter of the central body (''muC'') ',...
                'must be given as a real positive scalar.']);
-           
+
     end
-    
+
     function encke_options = get_options(varargin)
-        
+
         % Default options
         encke_options = struct('scale_factor', 1.0 / 100); % Scale criterion for rectifications; 1.0%
-        
+
         if nargin == 0
-            return; end        
-                
+            return; end
+
         % Non-defaults should be passed via parameter/value pairs
         assert(mod(nargin, 2)==0,...
                [mfilename ':pvpairs_expected'], ...
                'Parameter value pairs expected.');
-        
+
         parameters = varargin(1:2:end);
         values     = varargin(2:2:end);
-         
+
         for ii = 1:numel(parameters)
-                
+
             parameter = parameters{ii};
             value     = values{ii};
-            
+
             switch lower(parameter)
-                
+
                 case {'scale' 'scale_factor'}
                     % TODO: assertions
-                    encke_options.scale_factor = value;   
-                    
+                    encke_options.scale_factor = value;
+
                 otherwise
                     warning([mfilename ':unsupported_parameter'], ...
                             'Unsupported parameter: "%s"; ignoring...',...
                             parameter);
                     continue;
             end
-            
+
         end
-        
+
     end
 
     %{
-    Wrapper for any existing output function. For the chained method, 
+    Wrapper for any existing output function. For the chained method,
     if the existing output function asks the solver to terminate, also
     the outer loop should be broken
     %}
     function terminate = existing_outputFcn_wrapper(varargin)
         terminate = feval(existing_outputFcn, varargin{:});
         if (terminate)
-            done = true; end        
+            done = true; end
     end
 
 
@@ -293,11 +290,11 @@ function [t,... % time
 
             t_new = t(end);
             if solver.order == 1
-                % (t,y,flag)                    
+                % (t,y,flag)
                 delta_new    = y(1:3,end);
                 deltadot_new = y(4:6,end);
             else
-                % (t,y,dy,flag)                    
+                % (t,y,dy,flag)
                 delta_new    = y;
                 deltadot_new = varargin{1};
             end
@@ -312,7 +309,7 @@ function [t,... % time
 
             if norm(delta_new) > encke_options.scale_factor * norm(rosc_t)
 
-                terminate = true;                                
+                terminate = true;
 
                 % Do rectification
                 rosc = rosc_t + delta_new;
@@ -330,14 +327,14 @@ function [t,... % time
     Compute first derivative of
 
           y(t) = [delta(t)      % == r(t) - rosc(t)
-                  delta_dot(t)] % == v(t) - vosc(t)              
+                  delta_dot(t)] % == v(t) - vosc(t)
 
     This DE should be used if the disturbing acceleration depends on the
     velocity, or if the solver is designed to solve systems of the type
 
             dy/dt = f(t,y)
 
-    s.t.  
+    s.t.
             y(t0) = y0
 
     %}
@@ -365,7 +362,7 @@ function [t,... % time
         dydt = [delta_dot  % d (delta)/dt
                 a_total];  % d²(delta)/dt²
 
-        % Check whether current scale still justifies the use of Encke 
+        % Check whether current scale still justifies the use of Encke
         check_scale(a_perturb, rt2);
 
     end
@@ -403,18 +400,18 @@ function [t,... % time
         a_perturb  = perturbation(t, r_t);
         d2deltadt2 = a_main + a_perturb;
 
-        % Check whether current scale still justifies the use of Encke 
+        % Check whether current scale still justifies the use of Encke
         check_scale(a_perturb, rt2);
 
     end
-    
+
     % Check whether Encke's method still makes sense
     function check_scale(a_perturb, rt2)
-        
-        persistent scale_warning_issued 
+
+        persistent scale_warning_issued
         if isempty(scale_warning_issued)
             scale_warning_issued = false; end
-        
+
         if ~scale_warning_issued && encke_options.scale_factor*muC/rt2 < norm(a_perturb)
             scale_warning_issued = true;
             warning([mfilename ':scale_issues'], [...
@@ -423,7 +420,7 @@ function [t,... % time
                     'this problem.'],...
                     encke_options.scale_factor*100);
         end
-        
+
     end
 
 end
